@@ -59,6 +59,13 @@ Options:
 
 -a              significance of the likelihood ratio test, defaults to 0.01.
 
+-g              filename of gff input file. IDs of gene features need to match
+                those of the input sequences. By default the merged output
+                gff file will be named same as input + '.merged'. Use the -w 
+                to overwrite.
+
+-w              filename of gff output file. Only affects if -g is specified.
+
 EOF
 }
 
@@ -68,7 +75,9 @@ family_size="5"
 n_samples="100"
 col_thr="95"
 lrt_sign="0.01"
-while getopts "hvl:o:s:b:c:a:" opt; do
+gff=""
+gff_out=""
+while getopts "hvl:o:s:b:c:a:g:w:" opt; do
     case $opt in
     h) usage
        exit 0
@@ -93,10 +102,14 @@ while getopts "hvl:o:s:b:c:a:" opt; do
        ;;
     a) lrt_sign="$OPTARG"
        ;;
+    g) gff="$OPTARG"
+       ;;
+    w) gff_out="$OPTARG"
+       ;;
     esac
 done
 shift $((OPTIND-1))
-  
+
 unique_str="$1"
 gene_fam_dir="${2:-./HOGFasta}"
 orthoxml="${3:-./HierarchicalGroups.orthoxml}"
@@ -542,7 +555,10 @@ cd phy_c
 for f in *.phy
 do
     cat ../one_tree.txt > $f.sh
-    echo 'FastTree' `echo $f` '>' `echo $f`'_tree.txt'>> $f.sh
+    cat >> $f.sh << EOF
+    source ../load_env
+    FastTree $f > ${f}_tree.txt
+EOF
 done
 
 
@@ -627,7 +643,10 @@ cd phy
 for f in *.phy
 do
     cat ../one_tree.txt > $f.notop.sh
-    echo 'FastTree' `echo $f` '>' `echo $f`'_tree_notop.txt'>> $f.notop.sh
+    cat >> $f.notop.sh << EOF
+    source ../load_env
+    FastTree $f > ${f}_tree_notop.txt
+EOF
 done
 
 i=1
@@ -674,7 +693,10 @@ cd phy
 for f in *.phy
 do
     cat ../one_tree.txt > $f.top.sh
-    echo 'FastTree -intree' `echo ${f%.phy}`'_c.phy_tree_s.txt' `echo $f` '>' `echo $f`'_tree_top.txt' >> $f.top.sh
+    cat >> $f.top.sh << EOF
+    source ../load_env
+    FastTree -intree  ${f%.phy}_c.phy_tree_s.txt $f > ${f}_tree_top.txt
+EOF
 done
 
 i=1
@@ -1158,12 +1180,14 @@ cat >> split_aln.sh << EOF
 
 source ./load_env
 python split_aln.py cuts.txt aln_c/bootstrap/
-EOF
 
 cat > split_aln.py << EOF
 import sys
 from Bio import AlignIO
 import glob, os
+import logging
+logger = logging.getLogger("split_aln")
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s - %(levelname)s: %(message)s")
 
 def find_key(d, s1, s2):
     for key in d.keys():
@@ -1192,6 +1216,7 @@ def read_msa(loc):
     return msa
 
 def split_sequence(msa, id_full, id1, id2, n):
+    logger.info('splitting sequence {} at {} into {} and {}'.format(id_full, n, id1, id2))
     msa[id1] = msa[id_full][0:n] + '-' * (len(msa[id_full]) - n)
     msa[id2] = '-' * n + msa[id_full][n:]
     msa.pop(id_full)
@@ -1205,14 +1230,14 @@ def write_dictionary(d, out):
     f.close()
     return
 
-
 cuts = dict()
-cf = open(os.getcwd() + '/' + sys.argv[1], 'r')
-tmp = cf.readlines()
-for i in range(len(tmp)):
-    temp  = tmp[i].split()
-    cuts[temp[1], temp[2]] = int(temp[3])
-cf.close()
+fn = os.path.join(os.getcwd(), sys.argv[1])
+logger.info('loading cuts from '+fn)
+with open(fn, 'r') as cf:
+    for line in cf:
+        temp  = line.split()
+        cuts[temp[1], temp[2]] = int(temp[3])
+        logger.debug('cuts: {} / {}: {}'.format(temp[1], temp[2], temp[3])) 
 
 
 boot_dir = os.getcwd() + '/' + sys.argv[2]
@@ -1228,6 +1253,7 @@ for i in range(len(files)):
         id1, id2 = find_key(cuts, i2, i1)
     else:
         c = False
+    logger.debug('checking {}, {} for cuts: {}'.format(i1, i2, c)) 
     if c:   
         n = cuts[id1, id2]
         msa = read_msa(files[i])
@@ -1286,15 +1312,20 @@ for f in *.phy; do echo \${f/_c.*.phy/};done | sort| uniq > foldernames.txt
 for line in \`cat foldernames.txt\`
 do  
     mkdir \$line
-    find . -name "\$line*.phy" -exec mv {} \$line/ \; &
+    find . -maxdepth 1 -name "\$line*.phy" -exec mv {} \$line/ \; &
     wait
 done
 
 for line in \`cat foldernames.txt\`
 do
-        cat ../bootstrap_trees.txt > \$line.sh
-    echo 'cd ' bootstrap_phy/\$line >> \$line.sh
-    echo 'for f in *.phy; do FastTree \$f > \$f.tree.txt; done' >> \$line.sh
+    cat ../bootstrap_trees.txt > \$line.sh
+    cat >> \$line.sh << EOA
+    source load_env
+    cd bootstrap_phy/\$line
+    for f in *.phy; do 
+        FastTree \\\$f > \\\$f.tree.txt
+    done
+EOA
 done
 EOF
 
@@ -1312,7 +1343,7 @@ cat organise_files.txt > splitting_trees_b.sh
 cat >> splitting_trees_b.sh << EOF
 
 mkdir -p n_1_b_trees
-find bootstrap_phy/*/ -name "*tree.txt" -exec mv {} n_1_b_trees \; &
+find bootstrap_phy/ -type f -name "*tree.txt" -exec mv {} n_1_b_trees \; &
 wait
 
 source ./load_env
@@ -1325,13 +1356,13 @@ cat organise_files.txt > organise_b_n_1.sh
 cat >> organise_b_n_1.sh << EOF
 
 mkdir n_1_b_trees_s
-find n_1_b_trees/ -name "*_s.txt" -exec mv {} n_1_b_trees_s \; &
+find n_1_b_trees/ -type f -name "*_s.txt" -exec mv {} n_1_b_trees_s \; &
 wait
 tar -zcvf n_1_b_trees.tar.gz n_1_b_trees --remove-files
 tar -zcvf n_1_b_trees_s.tar.gz n_1_b_trees_s --remove-files
 
 mkdir n_1_b_res
-find . -name "job_b_n_1*" -exec mv {} n_1_b_res \; &
+find . -name "job_b_n_1*" -exec mv {} n_1_b_res \; 2>/dev/null &
 wait
 tar -zcvf n_1_b_res.tar.gz n_1_b_res --remove-files
 
@@ -1358,24 +1389,34 @@ for f in *.phy; do echo \${f/_c.*.phy/};done | sort| uniq > foldernames.txt
 for line in \`cat foldernames.txt\`
 do  
     mkdir \$line
-    find . -name "\$line*.phy" -exec mv {} \$line/ \; &
+    find . -maxdepth 1 -name "\$line*.phy" -exec mv {} \$line/ \; &
     wait
-    find . -name "\$line*.txt" -exec mv {} \$line/ \; &
+    find . -maxdepth 1 -name "\$line*.txt" -exec mv {} \$line/ \; &
     wait
 done
 
 for line in \`cat foldernames.txt\`
 do
     cat ../bootstrap_trees.txt > \$line.notop.sh
-    echo 'cd ' bootstrap_s_phy/\$line >> \$line.notop.sh
-    echo 'for f in *.phy; do FastTree \$f > \$f.tree_notop.txt; done' >> \$line.notop.sh
+    cat >> \$line.notop.sh << EOA
+    source load_env
+    cd  bootstrap_s_phy/\$line
+    for f in *.phy; do 
+        FastTree \\\$f > \\\$f.tree_notop.txt
+    done
+EOA
 done
 
 for line in \`cat foldernames.txt\`
 do
     cat ../bootstrap_trees.txt > \$line.top.sh
-    echo 'cd ' bootstrap_s_phy/\$line >> \$line.top.sh
-    echo 'for f in *.phy; do FastTree -intree \${f/_s.phy/}.phy.tree_s.txt \$f > \$f.tree_top.txt; done' >> \$line.top.sh
+    cat >> \$line.top.sh << EOB
+    source load_env
+    cd bootstrap_s_phy/\$line
+    for f in *.phy; do 
+        FastTree -intree \\\${f/_s.phy/}.phy.tree_s.txt \\\$f > \\\$f.tree_top.txt
+    done
+EOB
 done
 EOF
 
@@ -1723,9 +1764,9 @@ cat >> collapse.sh << EOF
 
 mkdir collapsed_$col_thr
 tar -zxvf n_trees_notop.tar.gz
-cd n_trees_notop/
-
 source ./load_env
+
+cd n_trees_notop/
 for f in *phy_tree_notop.txt
 do
     python ../collapse.py \$f --threshold 0.$col_thr > ../collapsed_$col_thr/\$f
@@ -1795,6 +1836,9 @@ cat > predict.py << EOF
 #http://stackoverflow.com/questions/21646703/grouping-elements-from-2-tuples-recursively
 
 import sys, os
+import logging
+
+logger = logging.getLogger(__name__)
 
 def find_clusters( tuples ):
     # clusterlist contains at each position either a set
@@ -1926,6 +1970,26 @@ amb_out.write('Collapsing with threshold 0.' + '`echo $col_thr`' + ', LRT signif
 for i in range(len(amb)):
     amb_out.write(amb[i][0] + '\t' + amb[i][1] + '\n')
 amb_out.close()
+
+if len('$gff') > 0:
+    import gff
+    try:
+        merger = gff.GFFOperations('$gff')
+    except Exception:
+        logger.exception('input gff file is invalid')
+        return
+
+    for pair in unamb:
+        try:
+            merger.merge_genes(pair)
+        except MergeError as e:
+            logger.warning('cannot merge {} gene pair in gff file: {}', pair, str(e))
+        except KeyError as e:
+            logger.error('invalid gene for gff file: {}', str(e))
+    outfile = '$gff_out' if len('$gff_out') > 0 else '$gff'+'.merged'
+    merger.write(outfile)
+
+print('all finished. Bye!')
 EOF
 
 cat organise_files.txt > predict.sh

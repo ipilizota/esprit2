@@ -1,7 +1,10 @@
 lxml
+scipy
 ete3
 dendropy
 requests
 ruffus
 biopython
 future
+six
+gffutils
